@@ -6,9 +6,12 @@ import {
   assignTask,
   closeRequest,
   createRequest,
+  dispatchBatch,
   extendRequest,
   recordExport,
+  registerBatchReceipt,
   resolveConflict,
+  retryFailedItems,
   saveRequest,
   taskAction,
   verifyIdentity,
@@ -16,15 +19,18 @@ import {
 import { createInitialState } from '@/services/mockData'
 import {
   assignTaskInputSchema,
+  batchReceiptInputSchema,
   closeRequestInputSchema,
   commentInputSchema,
   conflictInputSchema,
   createRequestInputSchema,
+  dispatchBatchInputSchema,
   evidenceInputSchema,
   extendRequestInputSchema,
   identityInputSchema,
   recordExportInputSchema,
   resolveConflictInputSchema,
+  retryBatchInputSchema,
   saveRequestInputSchema,
   taskActionInputSchema,
 } from '@/lib/schemas'
@@ -165,6 +171,37 @@ export const appRouter = t.router({
       .mutation(({ input }) =>
         execute(() =>
           recordExport(input.state, input.scope, input.count, input.operator),
+        ),
+      ),
+    dispatchBatch: publicProcedure
+      .input(dispatchBatchInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          dispatchBatch(input.state, input.requestId, input.note, input.operator),
+        ),
+      ),
+    registerBatchReceipt: publicProcedure
+      .input(batchReceiptInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          registerBatchReceipt(
+            input.state,
+            input.requestId,
+            input.batchId,
+            input.systemId,
+            input.result,
+            input.receiptRef,
+            input.failureReason,
+            input.legalHold,
+            input.operator,
+          ),
+        ),
+      ),
+    retryBatch: publicProcedure
+      .input(retryBatchInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          retryFailedItems(input.state, input.requestId, input.batchId, input.operator),
         ),
       ),
   }),

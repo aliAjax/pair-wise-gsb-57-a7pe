@@ -44,6 +44,7 @@ import {
   useWorkspaceQuery,
 } from '@/lib/hooks'
 import { deadlineState } from '@/services/workflow'
+import { batchConclusion } from '@/services/batchService'
 
 export function ReviewPage() {
   const router = useRouter()
@@ -69,10 +70,18 @@ export function ReviewPage() {
           request.identity.status === 'insufficient' ||
           request.duplicateOf ||
           request.conflicts.length > 0 ||
+          ['has-failures', 'superseded'].includes(batchConclusion(request).kind) ||
           new Date(request.dueAt).getTime() < Date.now(),
       ) ?? [],
     [data],
   )
+
+  const batchFailureCount = queue.filter(
+    (request) => batchConclusion(request).kind === 'has-failures',
+  ).length
+  const batchSupersededCount = queue.filter(
+    (request) => batchConclusion(request).kind === 'superseded',
+  ).length
 
   if (isLoading || !data) return <Box className="panel">正在加载复核队列...</Box>
 
@@ -153,20 +162,20 @@ export function ReviewPage() {
             {queue.length}
           </Heading>
         </Box>
-        <Box className="metric warning">
+        <Box className="metric danger">
           <Text color="gray.600" fontSize="sm">
-            身份材料不足
+            批次失败待重试
           </Text>
           <Heading mt="2" size="md">
-            {queue.filter((request) => request.identity.status === 'insufficient').length}
+            {batchFailureCount}
           </Heading>
         </Box>
         <Box className="metric danger">
           <Text color="gray.600" fontSize="sm">
-            结果冲突
+            旧批次作废 / 迟到回执
           </Text>
           <Heading mt="2" size="md">
-            {queue.reduce((total, request) => total + request.conflicts.length, 0)}
+            {batchSupersededCount}
           </Heading>
         </Box>
         <Box className="metric info">
@@ -175,6 +184,14 @@ export function ReviewPage() {
           </Text>
           <Heading mt="2" size="md">
             {queue.filter((request) => request.duplicateOf).length}
+          </Heading>
+        </Box>
+        <Box className="metric warning">
+          <Text color="gray.600" fontSize="sm">
+            身份材料不足
+          </Text>
+          <Heading mt="2" size="md">
+            {queue.filter((request) => request.identity.status === 'insufficient').length}
           </Heading>
         </Box>
       </SimpleGrid>
@@ -186,6 +203,7 @@ export function ReviewPage() {
               <Tr>
                 <Th>请求</Th>
                 <Th>状态</Th>
+                <Th>批次结论</Th>
                 <Th>复核原因</Th>
                 <Th>身份状态</Th>
                 <Th>期限</Th>
@@ -195,6 +213,15 @@ export function ReviewPage() {
             <Tbody>
               {queue.map((request) => {
                 const deadline = deadlineState(request.dueAt)
+                const conclusion = batchConclusion(request)
+                const conclusionColor =
+                  conclusion.kind === 'all-succeeded'
+                    ? 'green'
+                    : conclusion.kind === 'superseded'
+                      ? 'purple'
+                      : conclusion.kind === 'has-failures'
+                        ? 'red'
+                        : 'gray'
                 return (
                   <Tr key={request.id}>
                     <Td>
@@ -205,6 +232,14 @@ export function ReviewPage() {
                     </Td>
                     <Td>
                       <StatusBadge status={request.status} />
+                    </Td>
+                    <Td maxW="220px">
+                      <Badge colorScheme={conclusionColor}>{conclusion.label}</Badge>
+                      <Text mt="1" color="gray.500" fontSize="xs">
+                        {conclusion.kind === 'none'
+                          ? '跨系统批次尚未发出'
+                          : `${conclusion.batch.code} · v${conclusion.batch.scopeVersion}`}
+                      </Text>
                     </Td>
                     <Td maxW="360px">
                       <VStack align="stretch" spacing="1">

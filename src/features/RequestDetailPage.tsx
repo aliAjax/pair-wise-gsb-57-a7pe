@@ -41,6 +41,7 @@ import {
 import { ArrowLeft, FileCheck2, Link2Off, ShieldAlert } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
+import { BatchPanel } from '@/components/BatchPanel'
 import {
   useAddCommentMutation,
   useAddConflictMutation,
@@ -62,6 +63,7 @@ import {
   type WorkflowStep,
 } from '@/lib/schemas'
 import { deadlineState } from '@/services/workflow'
+import { batchConclusion } from '@/services/batchService'
 
 type DialogType =
   | 'edit'
@@ -121,6 +123,11 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const completedTasks = request.tasks.filter((task) => task.status === 'completed').length
   const currentTask = request.tasks.find((task) => task.status === 'active')
   const systems = data.systems.filter((system) => request.affectedSystemIds.includes(system.id))
+  const conclusion = batchConclusion(request)
+  const runningBatch = request.batches.find((batch) => batch.status === 'running')
+  const scopeDirty = runningBatch
+    ? runningBatch.scopeVersion !== request.scopeVersion
+    : false
 
   function openDialog(type: DialogType, task?: WorkflowStep, index = 0) {
     if (!request) return
@@ -470,6 +477,8 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
         </Box>
       </div>
 
+      <BatchPanel request={request} workspace={data} />
+
       <div className="three-column">
         <Box className="panel">
           <Flex className="panel-title">
@@ -718,6 +727,16 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           <ModalBody>
             {dialog === 'edit' ? (
               <VStack align="stretch" spacing="4">
+                {runningBatch && !scopeDirty ? (
+                  <Alert status="warning" borderRadius="5px">
+                    批次 {runningBatch.code} 正在执行：修改请求类型、涉及系统或履约任务构成会把范围升至新版本，该批次立即作废，此后迟到的回执自动作废并转入复核。
+                  </Alert>
+                ) : null}
+                {scopeDirty ? (
+                  <Alert status="error" borderRadius="5px">
+                    当前编辑的范围已领先于执行中批次，旧批次的迟到回执只作废、不覆盖新安排。
+                  </Alert>
+                ) : null}
                 <FormControl isRequired>
                   <FormLabel>请求人</FormLabel>
                   <Input

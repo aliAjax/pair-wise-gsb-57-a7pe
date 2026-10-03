@@ -1,6 +1,13 @@
 export type {
+  BatchAttempt,
+  BatchAttemptResult,
+  BatchConclusion,
+  BatchItem,
+  BatchItemStatus,
+  BatchStatus,
   DataSystem,
   AuditEntry,
+  ExecutionBatch,
   ExecutionEvidence,
   IdentityCheck,
   PrivacyRequest,

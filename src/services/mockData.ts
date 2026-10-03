@@ -94,7 +94,7 @@ export function createInitialState(): WorkspaceState {
       requesterContact: 'zh***@example.com',
       region: 'cn',
       type: 'access',
-      status: 'processing',
+      status: 'review-required',
       identity: {
         status: 'verified',
         materialType: 'masked-id',
@@ -106,6 +106,7 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request1At,
       dueAt: request1Due,
       extendedDays: 0,
+      scopeVersion: 1,
       affectedSystemIds: ['sys-crm', 'sys-order', 'sys-support'],
       tasks: buildWorkflowSteps({
         requestId: 'req-001',
@@ -128,7 +129,71 @@ export function createInitialState(): WorkspaceState {
           protected: true,
         },
       ],
-      conflicts: [],
+      conflicts: [
+        '系统执行失败（批次 DSR-2026-001-B01 · 订单与交易平台）：法务保留生效，离线加密包导出被阻断（保留案号 LH-2026-118）；重试只处理该失败项。',
+      ],
+      batches: [
+        {
+          id: 'batch-001',
+          code: 'DSR-2026-001-B01',
+          createdAt: '2026-09-25T06:00:00.000Z',
+          createdBy: '隐私运营',
+          requestType: 'access',
+          systemIds: ['sys-crm', 'sys-order', 'sys-support'],
+          scopeDigest: 'SC-5029BB3F',
+          scopeVersion: 1,
+          status: 'running',
+          note: '跨系统访问请求统一批次，各系统分别回执。',
+          items: [
+            {
+              systemId: 'sys-crm',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-001-crm',
+                  startedAt: '2026-09-25T06:00:00.000Z',
+                  finishedAt: '2026-09-26T03:12:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'CRM-ACK-77421',
+                },
+              ],
+              receiptRef: 'CRM-ACK-77421',
+              receiptAt: '2026-09-26T03:12:00.000Z',
+            },
+            {
+              systemId: 'sys-order',
+              status: 'failed',
+              attempts: [
+                {
+                  id: 'attempt-001-order',
+                  startedAt: '2026-09-25T06:00:00.000Z',
+                  finishedAt: '2026-09-27T08:45:00.000Z',
+                  result: 'failed',
+                  failureReason: '法务保留生效，离线加密包导出被阻断（保留案号 LH-2026-118）。',
+                  legalHold: true,
+                },
+              ],
+              failureReason: '法务保留生效，离线加密包导出被阻断（保留案号 LH-2026-118）。',
+              legalHold: true,
+            },
+            {
+              systemId: 'sys-support',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-001-support',
+                  startedAt: '2026-09-25T06:00:00.000Z',
+                  finishedAt: '2026-09-26T09:30:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'SUP-RCP-3309',
+                },
+              ],
+              receiptRef: 'SUP-RCP-3309',
+              receiptAt: '2026-09-26T09:30:00.000Z',
+            },
+          ],
+        },
+      ],
       resultSummary: '',
       closureReason: '',
       audit: [
@@ -138,6 +203,20 @@ export function createInitialState(): WorkspaceState {
           '客服专员',
           '访问请求已登记，并生成 30 日流程。',
           request1At,
+        ),
+        audit(
+          'req-audit-001-batch',
+          '发出跨系统执行批次',
+          '隐私运营',
+          '批次 DSR-2026-001-B01 已发出，覆盖 3 个系统（范围版本第 1 版，SC-5029BB3F）。',
+          '2026-09-25T06:00:00.000Z',
+        ),
+        audit(
+          'req-audit-001-fail',
+          '登记系统执行失败',
+          '交易系统组',
+          '订单与交易平台执行失败：法务保留（LH-2026-118），其余系统不受影响。',
+          '2026-09-27T08:45:00.000Z',
         ),
       ],
     },
@@ -159,6 +238,7 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request2At,
       dueAt: request2Due,
       extendedDays: 0,
+      scopeVersion: 1,
       duplicateOf: 'req-005',
       affectedSystemIds: ['sys-crm', 'sys-marketing', 'sys-support'],
       tasks: buildWorkflowSteps({
@@ -175,6 +255,7 @@ export function createInitialState(): WorkspaceState {
         '身份材料不足：授权书无法证明申请人与数据主体关系。',
         '疑似重复请求：与 DSR-2026-005 的请求人和处理类型相同。',
       ],
+      batches: [],
       resultSummary: '',
       closureReason: '',
       audit: [
@@ -206,18 +287,112 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request3At,
       dueAt: request3Due,
       extendedDays: 0,
+      scopeVersion: 2,
       affectedSystemIds: ['sys-crm', 'sys-risk', 'sys-support'],
-      tasks: buildWorkflowSteps({
-        requestId: 'req-003',
-        type: 'rectification',
-        systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
-        requestedAt: request3At,
-        dueAt: request3Due,
-        initialStatus: 'processing',
-        systems,
-      }).map((step, index) => (index === 1 ? { ...step, status: 'blocked', exceptionReason: '风控平台返回值与客服系统不一致。' } : step)),
+      tasks: (() => {
+        const base = buildWorkflowSteps({
+          requestId: 'req-003',
+          type: 'rectification',
+          systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
+          requestedAt: request3At,
+          dueAt: request3Due,
+          initialStatus: 'processing',
+          systems,
+        }).map((step, index) =>
+          index === 1 ? { ...step, status: 'blocked' as const, exceptionReason: '风控平台返回值与客服系统不一致。' } : step,
+        )
+        const withLegalStep = base.flatMap((step) =>
+          step.id === 'req-003-locate-sys-risk'
+            ? [
+                {
+                  id: 'req-003-legal-review',
+                  order: 0,
+                  name: '风控标签更正法务例外复核',
+                  role: '隐私负责人',
+                  systemId: 'sys-risk',
+                  status: 'blocked' as const,
+                  assignee: '隐私负责人',
+                  dueAt: request3Due,
+                  exceptionReason: '范围更新后新增的法务例外复核任务。',
+                },
+                step,
+              ]
+            : [step],
+        )
+        return withLegalStep.map((step, index) => ({ ...step, order: index + 1 }))
+      })(),
       evidence: [],
-      conflicts: ['跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。'],
+      conflicts: [
+        '批次 DSR-2026-003-B01 已被第 2 版范围替代：该批次此后到达的系统回执一律作废并转入复核，需按新范围重新发出批次。',
+        '迟到回执作废（批次 DSR-2026-003-B01 · 风控决策平台）：批次发出后请求范围已更新到第 2 版，迟到的成功回执不覆盖新安排，已转人工复核。',
+      ],
+      batches: [
+        {
+          id: 'batch-003',
+          code: 'DSR-2026-003-B01',
+          createdAt: '2026-09-22T03:00:00.000Z',
+          createdBy: '隐私运营',
+          requestType: 'rectification',
+          systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
+          scopeDigest: 'SC-8EE4FE5E',
+          scopeVersion: 1,
+          status: 'superseded',
+          note: '首版更正批次。',
+          items: [
+            {
+              systemId: 'sys-crm',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-003-crm',
+                  startedAt: '2026-09-22T03:00:00.000Z',
+                  finishedAt: '2026-09-23T02:20:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'CRM-UPD-2105',
+                },
+              ],
+              receiptRef: 'CRM-UPD-2105',
+              receiptAt: '2026-09-23T02:20:00.000Z',
+            },
+            {
+              systemId: 'sys-risk',
+              status: 'failed',
+              attempts: [
+                {
+                  id: 'attempt-003-risk-fail',
+                  startedAt: '2026-09-22T03:00:00.000Z',
+                  finishedAt: '2026-09-28T08:30:00.000Z',
+                  result: 'failed',
+                  failureReason: '风控平台拒绝更新风险标签关联姓名，需走法务例外。',
+                },
+                {
+                  id: 'attempt-003-risk-late',
+                  startedAt: '2026-09-28T08:31:00.000Z',
+                  finishedAt: '2026-09-29T07:55:00.000Z',
+                  result: 'succeeded',
+                  voided: true,
+                  receiptRef: 'RSK-UPD-8842',
+                },
+              ],
+              failureReason: '风控平台拒绝更新风险标签关联姓名，需走法务例外。',
+            },
+            {
+              systemId: 'sys-support',
+              status: 'voided',
+              attempts: [
+                {
+                  id: 'attempt-003-support',
+                  startedAt: '2026-09-22T03:00:00.000Z',
+                  finishedAt: '2026-09-29T10:10:00.000Z',
+                  result: 'succeeded',
+                  voided: true,
+                  receiptRef: 'SUP-UPD-5571',
+                },
+              ],
+            },
+          ],
+        },
+      ],
       resultSummary: '',
       closureReason: '',
       audit: [
@@ -227,6 +402,20 @@ export function createInitialState(): WorkspaceState {
           '数据管理员',
           '风控平台拒绝更新风险标签关联姓名。',
           '2026-09-28T08:30:00.000Z',
+        ),
+        audit(
+          'req-audit-003-scope',
+          '更新请求信息',
+          '隐私运营',
+          '请求范围更新（履约任务调整），执行中批次 DSR-2026-003-B01 已作废，未决项与迟到回执转入复核。',
+          '2026-09-28T12:00:00.000Z',
+        ),
+        audit(
+          'req-audit-003-void',
+          '迟到回执作废并转复核',
+          '风险技术组',
+          '风控决策平台的成功回执属于旧批次 DSR-2026-003-B01（第 1 版范围），已作废并转入复核队列。',
+          '2026-09-29T07:55:00.000Z',
         ),
       ],
     },
@@ -249,6 +438,7 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request4At,
       dueAt: request4Due,
       extendedDays: 0,
+      scopeVersion: 1,
       affectedSystemIds: ['sys-marketing'],
       tasks: buildWorkflowSteps({
         requestId: 'req-004',
@@ -272,6 +462,37 @@ export function createInitialState(): WorkspaceState {
         },
       ],
       conflicts: [],
+      batches: [
+        {
+          id: 'batch-004',
+          code: 'DSR-2026-004-B01',
+          createdAt: '2026-09-24T08:00:00.000Z',
+          createdBy: '隐私运营',
+          requestType: 'withdraw-consent',
+          systemIds: ['sys-marketing'],
+          scopeDigest: 'SC-0D42B36B',
+          scopeVersion: 1,
+          status: 'completed',
+          note: '撤回同意批次，单系统回执。',
+          items: [
+            {
+              systemId: 'sys-marketing',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-004-marketing',
+                  startedAt: '2026-09-24T08:00:00.000Z',
+                  finishedAt: '2026-09-28T09:00:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'MKT-WD-1027',
+                },
+              ],
+              receiptRef: 'MKT-WD-1027',
+              receiptAt: '2026-09-28T09:00:00.000Z',
+            },
+          ],
+        },
+      ],
       resultSummary: '营销平台已撤回同意并停止后续自动化触达。',
       closureReason: '',
       audit: [
@@ -303,6 +524,7 @@ export function createInitialState(): WorkspaceState {
       requestedAt: request5At,
       dueAt: request5Due,
       extendedDays: 0,
+      scopeVersion: 1,
       affectedSystemIds: ['sys-crm', 'sys-marketing'],
       tasks: buildWorkflowSteps({
         requestId: 'req-005',
@@ -326,6 +548,52 @@ export function createInitialState(): WorkspaceState {
         },
       ],
       conflicts: [],
+      batches: [
+        {
+          id: 'batch-005',
+          code: 'DSR-2026-005-B01',
+          createdAt: '2026-09-06T02:00:00.000Z',
+          createdBy: '隐私运营',
+          requestType: 'deletion',
+          systemIds: ['sys-crm', 'sys-marketing'],
+          scopeDigest: 'SC-9C68A205',
+          scopeVersion: 1,
+          status: 'completed',
+          note: '删除批次，全部系统成功。',
+          items: [
+            {
+              systemId: 'sys-crm',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-005-crm',
+                  startedAt: '2026-09-06T02:00:00.000Z',
+                  finishedAt: '2026-09-08T05:00:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'CRM-DEL-9910',
+                },
+              ],
+              receiptRef: 'CRM-DEL-9910',
+              receiptAt: '2026-09-08T05:00:00.000Z',
+            },
+            {
+              systemId: 'sys-marketing',
+              status: 'succeeded',
+              attempts: [
+                {
+                  id: 'attempt-005-marketing',
+                  startedAt: '2026-09-06T02:00:00.000Z',
+                  finishedAt: '2026-09-09T03:40:00.000Z',
+                  result: 'succeeded',
+                  receiptRef: 'MKT-DEL-4412',
+                },
+              ],
+              receiptRef: 'MKT-DEL-4412',
+              receiptAt: '2026-09-09T03:40:00.000Z',
+            },
+          ],
+        },
+      ],
       resultSummary: '已完成请求主体在两个系统中的删除，并保留最小合规凭证。',
       closureReason: '期限已到且任务完整，经复核后关闭。',
       audit: [

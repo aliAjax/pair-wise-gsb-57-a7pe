@@ -82,6 +82,47 @@ export const dataSystemSchema = z.object({
   status: z.enum(['active', 'maintenance', 'retired']),
 })
 
+export const batchAttemptResultSchema = z.enum(['succeeded', 'failed'])
+
+export const batchItemStatusSchema = z.enum(['pending', 'succeeded', 'failed', 'voided'])
+
+export const batchStatusSchema = z.enum(['running', 'completed', 'superseded'])
+
+export const batchAttemptSchema = z.object({
+  id: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  result: batchAttemptResultSchema.optional(),
+  voided: z.boolean().optional(),
+  receiptRef: z.string().optional(),
+  failureReason: z.string().optional(),
+  legalHold: z.boolean().optional(),
+})
+
+export const batchItemSchema = z.object({
+  systemId: z.string(),
+  status: batchItemStatusSchema,
+  attempts: z.array(batchAttemptSchema),
+  receiptRef: z.string().optional(),
+  receiptAt: z.string().optional(),
+  failureReason: z.string().optional(),
+  legalHold: z.boolean().optional(),
+})
+
+export const executionBatchSchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  createdAt: z.string(),
+  createdBy: z.string(),
+  requestType: requestTypeSchema,
+  systemIds: z.array(z.string()),
+  scopeDigest: z.string(),
+  scopeVersion: z.number(),
+  status: batchStatusSchema,
+  note: z.string(),
+  items: z.array(batchItemSchema),
+})
+
 export const privacyRequestSchema = z.object({
   id: z.string(),
   code: z.string(),
@@ -94,11 +135,13 @@ export const privacyRequestSchema = z.object({
   requestedAt: z.string(),
   dueAt: z.string(),
   extendedDays: z.number(),
+  scopeVersion: z.number().default(1),
   duplicateOf: z.string().optional(),
   affectedSystemIds: z.array(z.string()),
   tasks: z.array(workflowStepSchema),
   evidence: z.array(evidenceSchema),
   conflicts: z.array(z.string()),
+  batches: z.array(executionBatchSchema).default([]),
   resultSummary: z.string(),
   closureReason: z.string(),
   audit: z.array(
@@ -215,6 +258,32 @@ export const recordExportInputSchema = z.object({
   operator: z.string(),
 })
 
+export const dispatchBatchInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  note: z.string(),
+  operator: z.string(),
+})
+
+export const batchReceiptInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  batchId: z.string(),
+  systemId: z.string(),
+  result: batchAttemptResultSchema,
+  receiptRef: z.string(),
+  failureReason: z.string(),
+  legalHold: z.boolean().optional(),
+  operator: z.string(),
+})
+
+export const retryBatchInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  batchId: z.string(),
+  operator: z.string(),
+})
+
 export type RequestType = z.infer<typeof requestTypeSchema>
 export type RequestStatus = z.infer<typeof requestStatusSchema>
 export type Region = z.infer<typeof regionSchema>
@@ -224,6 +293,12 @@ export type ExecutionEvidence = z.infer<typeof evidenceSchema>
 export type ReviewComment = z.infer<typeof commentSchema>
 export type AuditEntry = z.infer<typeof auditEntrySchema>
 export type DataSystem = z.infer<typeof dataSystemSchema>
+export type BatchAttemptResult = z.infer<typeof batchAttemptResultSchema>
+export type BatchItemStatus = z.infer<typeof batchItemStatusSchema>
+export type BatchStatus = z.infer<typeof batchStatusSchema>
+export type BatchAttempt = z.infer<typeof batchAttemptSchema>
+export type BatchItem = z.infer<typeof batchItemSchema>
+export type ExecutionBatch = z.infer<typeof executionBatchSchema>
 export type PrivacyRequest = z.infer<typeof privacyRequestSchema>
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>
 
@@ -258,3 +333,40 @@ export const systemStatusLabels: Record<DataSystem['status'], string> = {
   maintenance: '维护中',
   retired: '已退役',
 }
+
+export const batchStatusLabels: Record<BatchStatus, string> = {
+  running: '执行中',
+  completed: '全部结清',
+  superseded: '已被新版本替代',
+}
+
+export const batchItemStatusLabels: Record<BatchItemStatus, string> = {
+  pending: '待回执',
+  succeeded: '成功',
+  failed: '失败',
+  voided: '迟到回执已作废',
+}
+
+export type BatchConclusion =
+  | { kind: 'none'; label: string; detail: string; settleable: true }
+  | {
+      kind: 'all-succeeded'
+      label: string
+      detail: string
+      settleable: true
+      batch: ExecutionBatch
+    }
+  | {
+      kind: 'has-failures'
+      label: string
+      detail: string
+      settleable: false
+      batch: ExecutionBatch
+    }
+  | {
+      kind: 'superseded'
+      label: string
+      detail: string
+      settleable: false
+      batch: ExecutionBatch
+    }

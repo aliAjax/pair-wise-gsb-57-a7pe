@@ -25,6 +25,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { useRecordExportMutation, useWorkspaceQuery } from '@/lib/hooks'
 import { clearWorkspace } from '@/lib/localStore'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { batchConclusion } from '@/services/batchService'
 
 function downloadFile(name: string, content: string, type: string) {
   const blob = new Blob([`\ufeff${content}`], { type })
@@ -110,6 +111,39 @@ export function AuditPage() {
           uploadedAt: evidence.uploadedAt,
         })),
         conflicts: request.conflicts,
+        batches: request.batches.map((batch) => ({
+          code: batch.code,
+          status: batch.status,
+          scopeVersion: batch.scopeVersion,
+          scopeDigest: batch.scopeDigest,
+          createdAt: batch.createdAt,
+          createdBy: batch.createdBy,
+          note: batch.note,
+          conclusion: (() => {
+            const conclusion = batchConclusion(request)
+            return {
+              label: conclusion.label,
+              detail: conclusion.detail,
+              settleable: conclusion.settleable,
+            }
+          })(),
+          items: batch.items.map((item) => ({
+            system: workspace.systems.find((system) => system.id === item.systemId)?.name ?? item.systemId,
+            status: item.status,
+            receiptRef: item.receiptRef ?? null,
+            receiptAt: item.receiptAt ?? null,
+            failureReason: item.failureReason ?? null,
+            legalHold: item.legalHold ?? false,
+            attempts: item.attempts.map((attempt) => ({
+              startedAt: attempt.startedAt,
+              finishedAt: attempt.finishedAt ?? null,
+              result: attempt.result ?? null,
+              voided: attempt.voided ?? false,
+              receiptRef: attempt.receiptRef ?? null,
+              failureReason: attempt.failureReason ?? null,
+            })),
+          })),
+        })),
         resultSummary: request.resultSummary,
         closureReason: request.closureReason,
       })),
