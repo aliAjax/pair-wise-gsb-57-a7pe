@@ -6,8 +6,10 @@ import {
   assignTask,
   closeRequest,
   createRequest,
+  dispatchBatch,
   extendRequest,
   recordExport,
+  recordReceipt,
   resolveConflict,
   saveRequest,
   taskAction,
@@ -20,10 +22,12 @@ import {
   commentInputSchema,
   conflictInputSchema,
   createRequestInputSchema,
+  dispatchBatchInputSchema,
   evidenceInputSchema,
   extendRequestInputSchema,
   identityInputSchema,
   recordExportInputSchema,
+  recordReceiptInputSchema,
   resolveConflictInputSchema,
   saveRequestInputSchema,
   taskActionInputSchema,
@@ -165,6 +169,25 @@ export const appRouter = t.router({
       .mutation(({ input }) =>
         execute(() =>
           recordExport(input.state, input.scope, input.count, input.operator),
+        ),
+      ),
+    dispatchBatch: publicProcedure
+      .input(dispatchBatchInputSchema)
+      .mutation(({ input }) =>
+        execute(() => dispatchBatch(input.state, input.requestId, input.operator)),
+      ),
+    recordReceipt: publicProcedure
+      .input(recordReceiptInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          recordReceipt(
+            input.state,
+            input.requestId,
+            input.itemId,
+            input.outcome,
+            input.failureReason,
+            input.operator,
+          ),
         ),
       ),
   }),

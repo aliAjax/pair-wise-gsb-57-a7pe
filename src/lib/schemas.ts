@@ -54,6 +54,45 @@ export const evidenceSchema = z.object({
   protected: z.literal(true),
 })
 
+export const batchReceiptSchema = z.object({
+  receiptNo: z.string(),
+  outcome: z.enum(['success', 'failure']),
+  failureReason: z.string(),
+  receivedAt: z.string(),
+  completedAt: z.string().optional(),
+})
+
+export const batchItemSchema = z.object({
+  id: z.string(),
+  batchId: z.string(),
+  systemId: z.string(),
+  taskId: z.string(),
+  attempt: z.number().int().min(1),
+  status: z.enum(['sent', 'succeeded', 'failed', 'superseded']),
+  retryOfItemId: z.string().optional(),
+  receipt: batchReceiptSchema.optional(),
+  voidedReceipt: batchReceiptSchema.optional(),
+  failureReason: z.string(),
+  updatedAt: z.string(),
+})
+
+export const executionBatchSchema = z.object({
+  id: z.string(),
+  requestId: z.string(),
+  sequence: z.number().int().min(1),
+  scopeHash: z.string(),
+  scopeSnapshot: z.object({
+    type: requestTypeSchema,
+    systemIds: z.array(z.string()),
+    taskIds: z.array(z.string()),
+  }),
+  status: z.enum(['in-flight', 'settled', 'superseded']),
+  dispatchedAt: z.string(),
+  dispatchedBy: z.string(),
+  settledAt: z.string().optional(),
+  items: z.array(batchItemSchema),
+})
+
 export const commentSchema = z.object({
   id: z.string(),
   requestId: z.string(),
@@ -97,6 +136,7 @@ export const privacyRequestSchema = z.object({
   duplicateOf: z.string().optional(),
   affectedSystemIds: z.array(z.string()),
   tasks: z.array(workflowStepSchema),
+  batches: z.array(executionBatchSchema),
   evidence: z.array(evidenceSchema),
   conflicts: z.array(z.string()),
   resultSummary: z.string(),
@@ -215,11 +255,29 @@ export const recordExportInputSchema = z.object({
   operator: z.string(),
 })
 
+export const dispatchBatchInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  operator: z.string(),
+})
+
+export const recordReceiptInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  itemId: z.string(),
+  outcome: z.enum(['success', 'failure']),
+  failureReason: z.string(),
+  operator: z.string(),
+})
+
 export type RequestType = z.infer<typeof requestTypeSchema>
 export type RequestStatus = z.infer<typeof requestStatusSchema>
 export type Region = z.infer<typeof regionSchema>
 export type IdentityCheck = z.infer<typeof identitySchema>
 export type WorkflowStep = z.infer<typeof workflowStepSchema>
+export type BatchReceipt = z.infer<typeof batchReceiptSchema>
+export type BatchItem = z.infer<typeof batchItemSchema>
+export type ExecutionBatch = z.infer<typeof executionBatchSchema>
 export type ExecutionEvidence = z.infer<typeof evidenceSchema>
 export type ReviewComment = z.infer<typeof commentSchema>
 export type AuditEntry = z.infer<typeof auditEntrySchema>
@@ -257,4 +315,17 @@ export const systemStatusLabels: Record<DataSystem['status'], string> = {
   active: '在用',
   maintenance: '维护中',
   retired: '已退役',
+}
+
+export const batchStatusLabels: Record<ExecutionBatch['status'], string> = {
+  'in-flight': '执行中',
+  settled: '已结清',
+  superseded: '已被取代',
+}
+
+export const batchItemStatusLabels: Record<BatchItem['status'], string> = {
+  sent: '等待回执',
+  succeeded: '成功',
+  failed: '失败',
+  superseded: '已作废',
 }

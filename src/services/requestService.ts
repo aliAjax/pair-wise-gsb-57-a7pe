@@ -1,10 +1,14 @@
 import type {
+  BatchItem,
+  BatchReceipt,
+  ExecutionBatch,
   IdentityCheck,
   PrivacyRequest,
   RequestStatus,
   RequestType,
   WorkspaceState,
 } from '@/types/domain'
+import { computeScopeHash, getBatchConclusion, isItemScopeCurrent, latestItemForSystem } from './batchService'
 import { addDays, buildWorkflowSteps, responseDays } from './workflow'
 
 const cloneState = (state: WorkspaceState): WorkspaceState => structuredClone(state)
@@ -49,15 +53,143 @@ function mutateRequest(
   state: WorkspaceState,
   requestId: string,
   mutation: (request: PrivacyRequest, draft: WorkspaceState) => void,
-  audit: { action: string; operator: string; detail: string },
+  audit:
+    | { action: string; operator: string; detail: string }
+    | (() => { action: string; operator: string; detail: string }),
 ): WorkspaceState {
   const draft = cloneState(state)
   const request = draft.requests.find((item) => item.id === requestId)
   if (!request) throw new Error('请求不存在')
   mutation(request, draft)
-  appendAudit(draft, request, audit.action, audit.operator, audit.detail)
+  const resolved = typeof audit === 'function' ? audit() : audit
+  appendAudit(draft, request, resolved.action, resolved.operator, resolved.detail)
   draft.revision += 1
   return draft
+}
+
+function refreshBatchStatus(batch: ExecutionBatch) {
+  if (batch.items.some((item) => item.status === 'sent')) {
+    batch.status = 'in-flight'
+    return
+  }
+  batch.settledAt = batch.settledAt ?? now()
+  batch.status = batch.items.some((item) => item.status === 'superseded') ? 'superseded' : 'settled'
+}
+
+function executeTaskName(type: RequestType, systemName: string): string {
+  return `${type === 'deletion' ? '执行删除' : type === 'rectification' ? '执行更正' : '执行请求'}：${systemName}`
+}
+
+function ensureExecuteTask(request: PrivacyRequest, draft: WorkspaceState, systemId: string): string {
+  const taskId = `${request.id}-execute-${systemId}`
+  if (request.tasks.some((task) => task.id === taskId)) return taskId
+  const system = draft.systems.find((item) => item.id === systemId)
+  request.tasks.push({
+    id: taskId,
+    order: request.tasks.length + 1,
+    name: executeTaskName(request.type, system?.name ?? systemId),
+    role: system?.owner ?? '数据管理员',
+    systemId,
+    status: 'pending',
+    assignee: system?.owner ?? '数据管理员',
+    dueAt: request.dueAt,
+    exceptionReason: '',
+  })
+  return taskId
+}
+
+interface DispatchInfo {
+  sequence: number
+  itemCount: number
+  retried: number
+  superseded: number
+}
+
+/**
+ * 派发新批次：只覆盖未结清的系统（失败、作废、未派发或范围已过期），
+ * 已成功的回执与完成时间保持不动；旧范围的在途项作废，等迟到回执转入复核。
+ */
+function dispatchBatchInternal(
+  request: PrivacyRequest,
+  draft: WorkspaceState,
+  operator: string,
+): DispatchInfo {
+  if (['completed', 'rejected'].includes(request.status)) {
+    throw new Error('请求已关闭，不能派发执行批次')
+  }
+  if (request.identity.status !== 'verified') {
+    throw new Error('身份核验通过后才能派发执行批次')
+  }
+  if (!request.affectedSystemIds.length) {
+    throw new Error('请求未关联任何系统，不能派发执行批次')
+  }
+  const scopeHash = computeScopeHash(request)
+  const conclusion = getBatchConclusion(request, draft.systems)
+  const pending = conclusion.systems.filter(
+    (item) =>
+      item.state === 'failed' ||
+      item.state === 'superseded' ||
+      item.state === 'not-dispatched' ||
+      item.stale,
+  )
+  if (!pending.length) {
+    if (conclusion.allSucceeded) throw new Error('全部系统均已成功结清，无需派发新批次')
+    throw new Error('在途回执尚未返回，且没有需要重试的失败项')
+  }
+  let superseded = 0
+  for (const batch of request.batches) {
+    for (const item of batch.items) {
+      if (item.status === 'sent' && !isItemScopeCurrent(request, batch, item)) {
+        item.status = 'superseded'
+        item.updatedAt = now()
+        superseded += 1
+      }
+    }
+    refreshBatchStatus(batch)
+  }
+  const sequence = request.batches.reduce((max, batch) => Math.max(max, batch.sequence), 0) + 1
+  const batchId = id('batch')
+  const items: BatchItem[] = pending.map((entry) => {
+    const taskId = ensureExecuteTask(request, draft, entry.systemId)
+    const task = request.tasks.find((item) => item.id === taskId)
+    const previous = latestItemForSystem(request, entry.systemId)
+    if (task && task.status === 'blocked') {
+      task.status = 'active'
+      task.exceptionReason = ''
+    }
+    return {
+      id: id('batch-item'),
+      batchId,
+      systemId: entry.systemId,
+      taskId,
+      attempt: (previous?.item.attempt ?? 0) + 1,
+      status: 'sent' as const,
+      retryOfItemId: previous?.item.id,
+      failureReason: '',
+      updatedAt: now(),
+    }
+  })
+  request.batches.push({
+    id: batchId,
+    requestId: request.id,
+    sequence,
+    scopeHash,
+    scopeSnapshot: {
+      type: request.type,
+      systemIds: [...request.affectedSystemIds],
+      taskIds: items.map((item) => item.taskId),
+    },
+    status: 'in-flight',
+    dispatchedAt: now(),
+    dispatchedBy: operator,
+    items,
+  })
+  return {
+    sequence,
+    itemCount: items.length,
+    retried: items.filter((item) => item.retryOfItemId).length,
+    superseded,
+  }
 }
 
 export interface CreateRequestInput {
@@ -123,6 +255,7 @@ export function createRequest(
       initialStatus: 'identity-review',
       systems: draft.systems,
     }),
+    batches: [],
     evidence: [],
     conflicts: [],
     resultSummary: '',
@@ -158,14 +291,33 @@ export function saveRequest(
   patch: Partial<PrivacyRequest>,
   operator: string,
 ): WorkspaceState {
+  let scopeNote = ''
   return mutateRequest(
     state,
     requestId,
     (request) => {
+      const scopeChanged =
+        (patch.affectedSystemIds !== undefined &&
+          JSON.stringify([...patch.affectedSystemIds].sort()) !==
+            JSON.stringify([...request.affectedSystemIds].sort())) ||
+        (patch.type !== undefined && patch.type !== request.type)
       Object.assign(request, patch)
       request.audit = request.audit
+      if (scopeChanged) {
+        const inFlight = request.batches.reduce(
+          (total, batch) => total + batch.items.filter((item) => item.status === 'sent').length,
+          0,
+        )
+        scopeNote = inFlight
+          ? `范围已更新：${inFlight} 项在途回执将按新范围校验，迟到回执作废并转入复核。`
+          : '范围已更新：后续批次按新范围派发。'
+      }
     },
-    { action: '更新请求信息', operator, detail: '更新申请人、地区、请求类型或涉及系统。' },
+    () => ({
+      action: '更新请求信息',
+      operator,
+      detail: `更新申请人、地区、请求类型或涉及系统。${scopeNote}`,
+    }),
   )
 }
 
@@ -179,7 +331,7 @@ export function verifyIdentity(
   return mutateRequest(
     state,
     requestId,
-    (request) => {
+    (request, draft) => {
       request.identity.status = status
       request.identity.note = note
       request.identity.reviewedAt = now()
@@ -196,6 +348,16 @@ export function verifyIdentity(
         const nextTask = request.tasks.find((task) => task.status === 'pending')
         if (nextTask) nextTask.status = 'active'
         request.status = request.conflicts.length ? 'review-required' : 'processing'
+        if (!request.conflicts.length && !request.batches.length && request.affectedSystemIds.length) {
+          const info = dispatchBatchInternal(request, draft, operator)
+          appendAudit(
+            draft,
+            request,
+            '派发执行批次',
+            operator,
+            `身份核验通过后自动派发第 ${info.sequence} 批，覆盖 ${info.itemCount} 个系统。`,
+          )
+        }
       } else {
         if (identityTask) {
           identityTask.status = 'blocked'
@@ -255,6 +417,12 @@ export function taskAction(
         task.status = 'active'
         task.exceptionReason = ''
       } else if (action === 'complete') {
+        const openItem = request.batches
+          .flatMap((batch) => batch.items)
+          .find((item) => item.taskId === task.id && item.status === 'sent')
+        if (openItem) {
+          throw new Error('该系统已纳入执行批次等待回执，请登记系统回执而非手动完成')
+        }
         task.status = 'completed'
         task.completedAt = now()
         task.exceptionReason = ''
@@ -279,6 +447,132 @@ export function taskAction(
       operator,
       detail: note || `${taskId} 状态更新为 ${action}。`,
     },
+  )
+}
+
+export function dispatchBatch(
+  state: WorkspaceState,
+  requestId: string,
+  operator: string,
+): WorkspaceState {
+  let info: DispatchInfo = { sequence: 0, itemCount: 0, retried: 0, superseded: 0 }
+  return mutateRequest(
+    state,
+    requestId,
+    (request, draft) => {
+      info = dispatchBatchInternal(request, draft, operator)
+      if (!request.conflicts.length) request.status = 'processing'
+    },
+    () => ({
+      action: '派发执行批次',
+      operator,
+      detail:
+        `第 ${info.sequence} 批覆盖 ${info.itemCount} 个系统` +
+        `${info.retried ? `，其中重试 ${info.retried} 项` : ''}` +
+        `${info.superseded ? `，${info.superseded} 项旧范围在途回执作废` : ''}` +
+        '；已成功的回执与完成时间保持不变。',
+    }),
+  )
+}
+
+export function recordReceipt(
+  state: WorkspaceState,
+  requestId: string,
+  itemId: string,
+  outcome: 'success' | 'failure',
+  failureReason: string,
+  operator: string,
+): WorkspaceState {
+  let auditAction = '登记系统回执'
+  let auditDetail = ''
+  return mutateRequest(
+    state,
+    requestId,
+    (request, draft) => {
+      if (['completed', 'rejected'].includes(request.status)) {
+        throw new Error('请求已关闭，不能登记回执')
+      }
+      let located: { batch: ExecutionBatch; item: BatchItem } | null = null
+      for (const batch of request.batches) {
+        const item = batch.items.find((entry) => entry.id === itemId)
+        if (item) located = { batch, item }
+      }
+      if (!located) throw new Error('批次项不存在')
+      const { batch, item } = located
+      if (item.status === 'succeeded' || item.status === 'failed') {
+        throw new Error(`该系统已留下最终回执 ${item.receipt?.receiptNo ?? ''}，不能重复登记或覆盖`)
+      }
+      const reason = failureReason.trim()
+      if (outcome === 'failure' && !reason) {
+        throw new Error('失败回执必须填写失败原因')
+      }
+      const systemName =
+        draft.systems.find((entry) => entry.id === item.systemId)?.name ?? item.systemId
+      const receipt: BatchReceipt = {
+        receiptNo: `RCPT-${request.code}-B${batch.sequence}-${item.systemId
+          .replace(/^sys-/, '')
+          .toUpperCase()}-A${item.attempt}`,
+        outcome,
+        failureReason: outcome === 'failure' ? reason : '',
+        receivedAt: now(),
+        completedAt: outcome === 'success' ? now() : undefined,
+      }
+      const scopeCurrent = isItemScopeCurrent(request, batch, item)
+      if (item.status === 'superseded' || !scopeCurrent) {
+        if (item.voidedReceipt) {
+          throw new Error(`迟到回执 ${item.voidedReceipt.receiptNo} 已作废登记，不能重复处理`)
+        }
+        item.voidedReceipt = receipt
+        item.status = 'superseded'
+        item.updatedAt = now()
+        refreshBatchStatus(batch)
+        request.conflicts.push(
+          `迟到回执作废：${systemName} 回执 ${receipt.receiptNo} 到达时请求范围已更新，结果未并入，转入复核。`,
+        )
+        request.status = 'review-required'
+        auditAction = '迟到回执作废'
+        auditDetail = `${systemName} 回执 ${receipt.receiptNo} 对应第 ${batch.sequence} 批旧范围，已作废并转入复核，未覆盖新安排。`
+        return
+      }
+      item.receipt = receipt
+      item.updatedAt = now()
+      if (outcome === 'success') {
+        item.status = 'succeeded'
+        const task = request.tasks.find((entry) => entry.id === item.taskId)
+        if (task && task.status !== 'completed') {
+          task.status = 'completed'
+          task.completedAt = receipt.completedAt
+          task.exceptionReason = ''
+        }
+        auditDetail = `${systemName} 回执 ${receipt.receiptNo} 登记成功，完成时间 ${receipt.completedAt}。`
+      } else {
+        item.status = 'failed'
+        item.failureReason = reason
+        const task = request.tasks.find((entry) => entry.id === item.taskId)
+        if (task) {
+          task.status = 'blocked'
+          task.exceptionReason = `系统回执失败：${reason}`
+        }
+        request.conflicts.push(`批次回执失败：${systemName} —— ${reason}`)
+        request.status = 'review-required'
+        auditAction = '批次回执失败'
+        auditDetail = `${systemName} 回执 ${receipt.receiptNo} 失败：${reason}，已转入复核。`
+      }
+      refreshBatchStatus(batch)
+      if (outcome === 'success' && !request.conflicts.length) {
+        const conclusion = getBatchConclusion(request, draft.systems)
+        const executableTasks = request.tasks.filter((entry) => !entry.id.endsWith('-close'))
+        if (
+          conclusion.allSucceeded &&
+          executableTasks.every((entry) => entry.status === 'completed')
+        ) {
+          request.status = 'pending-close'
+        } else if (request.status !== 'review-required') {
+          request.status = 'processing'
+        }
+      }
+    },
+    () => ({ action: auditAction, operator, detail: auditDetail }),
   )
 }
 
@@ -342,12 +636,22 @@ export function resolveConflict(
   return mutateRequest(
     state,
     requestId,
-    (request) => {
+    (request, draft) => {
       const conflict = request.conflicts[conflictIndex]
       if (!conflict) throw new Error('冲突项不存在')
       request.conflicts.splice(conflictIndex, 1)
       if (!request.conflicts.length && request.identity.status === 'verified') {
         request.status = 'processing'
+        if (!request.batches.length && request.affectedSystemIds.length) {
+          const info = dispatchBatchInternal(request, draft, operator)
+          appendAudit(
+            draft,
+            request,
+            '派发执行批次',
+            operator,
+            `复核清结后自动派发第 ${info.sequence} 批，覆盖 ${info.itemCount} 个系统。`,
+          )
+        }
       } else {
         request.status = 'review-required'
       }
@@ -386,9 +690,15 @@ export function closeRequest(
   return mutateRequest(
     state,
     requestId,
-    (request) => {
+    (request, draft) => {
       if (request.identity.status !== 'verified') {
         throw new Error('身份核验尚未通过，不能关闭请求')
+      }
+      if (request.batches.length) {
+        const conclusion = getBatchConclusion(request, draft.systems)
+        if (!conclusion.allSucceeded) {
+          throw new Error(`执行批次未全部结清，不能关闭。批次结论：${conclusion.summary}`)
+        }
       }
       const requiredTasks = request.tasks.filter((task) => !task.id.endsWith('-close'))
       if (requiredTasks.some((task) => task.status !== 'completed')) {

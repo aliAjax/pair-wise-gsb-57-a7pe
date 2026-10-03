@@ -24,6 +24,7 @@ import { Download, RotateCcw } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { useRecordExportMutation, useWorkspaceQuery } from '@/lib/hooks'
 import { clearWorkspace } from '@/lib/localStore'
+import { getBatchConclusion } from '@/services/batchService'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 
 function downloadFile(name: string, content: string, type: string) {
@@ -76,43 +77,79 @@ export function AuditPage() {
         ).length,
         systemCount: workspace.systems.length,
       },
-      requests: workspace.requests.map((request) => ({
-        code: request.code,
-        requesterName: request.requesterName,
-        requesterContact: request.requesterContact,
-        region: request.region,
-        type: request.type,
-        status: request.status,
-        requestedAt: request.requestedAt,
-        dueAt: request.dueAt,
-        extendedDays: request.extendedDays,
-        identity: {
-          status: request.identity.status,
-          materialType: request.identity.materialType,
-          maskedReference: request.identity.maskedReference,
-          protectedDigest: request.identity.protectedDigest,
-          note: request.identity.note,
-        },
-        affectedSystems: workspace.systems
-          .filter((system) => request.affectedSystemIds.includes(system.id))
-          .map((system) => system.name),
-        tasks: request.tasks.map((task) => ({
-          name: task.name,
-          status: task.status,
-          assignee: task.assignee,
-          completedAt: task.completedAt,
-          exceptionReason: task.exceptionReason,
-        })),
-        evidence: request.evidence.map((evidence) => ({
-          name: evidence.name,
-          type: evidence.evidenceType,
-          digest: evidence.digest,
-          uploadedAt: evidence.uploadedAt,
-        })),
-        conflicts: request.conflicts,
-        resultSummary: request.resultSummary,
-        closureReason: request.closureReason,
-      })),
+      requests: workspace.requests.map((request) => {
+        const conclusion = getBatchConclusion(request, workspace.systems)
+        return {
+          code: request.code,
+          requesterName: request.requesterName,
+          requesterContact: request.requesterContact,
+          region: request.region,
+          type: request.type,
+          status: request.status,
+          requestedAt: request.requestedAt,
+          dueAt: request.dueAt,
+          extendedDays: request.extendedDays,
+          identity: {
+            status: request.identity.status,
+            materialType: request.identity.materialType,
+            maskedReference: request.identity.maskedReference,
+            protectedDigest: request.identity.protectedDigest,
+            note: request.identity.note,
+          },
+          affectedSystems: workspace.systems
+            .filter((system) => request.affectedSystemIds.includes(system.id))
+            .map((system) => system.name),
+          tasks: request.tasks.map((task) => ({
+            name: task.name,
+            status: task.status,
+            assignee: task.assignee,
+            completedAt: task.completedAt,
+            exceptionReason: task.exceptionReason,
+          })),
+          batchConclusion: {
+            summary: conclusion.summary,
+            settled: conclusion.settled,
+            allSucceeded: conclusion.allSucceeded,
+            systems: conclusion.systems.map((item) => ({
+              system: item.systemName,
+              state: item.state,
+              stale: item.stale,
+              receiptNo: item.receiptNo,
+              failureReason: item.failureReason,
+              completedAt: item.completedAt,
+            })),
+          },
+          batches: request.batches.map((batch) => ({
+            sequence: batch.sequence,
+            status: batch.status,
+            scopeHash: batch.scopeHash,
+            dispatchedAt: batch.dispatchedAt,
+            dispatchedBy: batch.dispatchedBy,
+            settledAt: batch.settledAt,
+            items: batch.items.map((item) => ({
+              system:
+                workspace.systems.find((system) => system.id === item.systemId)?.name ??
+                item.systemId,
+              attempt: item.attempt,
+              status: item.status,
+              receiptNo: item.receipt?.receiptNo,
+              outcome: item.receipt?.outcome,
+              failureReason: item.failureReason || item.receipt?.failureReason || '',
+              completedAt: item.receipt?.completedAt,
+              voidedReceiptNo: item.voidedReceipt?.receiptNo,
+            })),
+          })),
+          evidence: request.evidence.map((evidence) => ({
+            name: evidence.name,
+            type: evidence.evidenceType,
+            digest: evidence.digest,
+            uploadedAt: evidence.uploadedAt,
+          })),
+          conflicts: request.conflicts,
+          resultSummary: request.resultSummary,
+          closureReason: request.closureReason,
+        }
+      }),
       audit: auditEntries,
     }
   }

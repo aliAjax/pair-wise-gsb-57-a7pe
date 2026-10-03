@@ -135,4 +135,18 @@ export function useRecordExportMutation() {
   )
 }
 
+export function useDispatchBatchMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.request.dispatchBatch.mutate>[0], 'state'>, state) =>
+      trpc.request.dispatchBatch.mutate({ ...input, state }),
+  )
+}
+
+export function useRecordReceiptMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.request.recordReceipt.mutate>[0], 'state'>, state) =>
+      trpc.request.recordReceipt.mutate({ ...input, state }),
+  )
+}
+
 export type { PrivacyRequest }

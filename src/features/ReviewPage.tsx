@@ -43,6 +43,7 @@ import {
   useVerifyIdentityMutation,
   useWorkspaceQuery,
 } from '@/lib/hooks'
+import { getBatchConclusion } from '@/services/batchService'
 import { deadlineState } from '@/services/workflow'
 
 export function ReviewPage() {
@@ -187,6 +188,7 @@ export function ReviewPage() {
                 <Th>请求</Th>
                 <Th>状态</Th>
                 <Th>复核原因</Th>
+                <Th>批次结论</Th>
                 <Th>身份状态</Th>
                 <Th>期限</Th>
                 <Th>操作</Th>
@@ -195,6 +197,7 @@ export function ReviewPage() {
             <Tbody>
               {queue.map((request) => {
                 const deadline = deadlineState(request.dueAt)
+                const conclusion = getBatchConclusion(request, data.systems)
                 return (
                   <Tr key={request.id}>
                     <Td>
@@ -217,6 +220,14 @@ export function ReviewPage() {
                           </Text>
                         ))}
                       </VStack>
+                    </Td>
+                    <Td maxW="260px">
+                      <Text
+                        fontSize="xs"
+                        color={conclusion.needsReview ? 'red.600' : 'gray.600'}
+                      >
+                        {conclusion.summary}
+                      </Text>
                     </Td>
                     <Td>
                       <Badge

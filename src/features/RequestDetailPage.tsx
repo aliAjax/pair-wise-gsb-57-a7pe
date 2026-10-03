@@ -38,7 +38,7 @@ import {
   useDisclosure,
   useToast,
 } from '@chakra-ui/react'
-import { ArrowLeft, FileCheck2, Link2Off, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, FileCheck2, Link2Off, Send, ShieldAlert } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
 import {
@@ -47,7 +47,9 @@ import {
   useAddEvidenceMutation,
   useAssignTaskMutation,
   useCloseRequestMutation,
+  useDispatchBatchMutation,
   useExtendRequestMutation,
+  useRecordReceiptMutation,
   useResolveConflictMutation,
   useSaveRequestMutation,
   useTaskActionMutation,
@@ -55,12 +57,17 @@ import {
   useWorkspaceQuery,
 } from '@/lib/hooks'
 import {
+  batchItemStatusLabels,
+  batchStatusLabels,
   regionLabels,
   requestTypeLabels,
+  type BatchItem,
+  type ExecutionBatch,
   type Region,
   type RequestType,
   type WorkflowStep,
 } from '@/lib/schemas'
+import { getBatchConclusion } from '@/services/batchService'
 import { deadlineState } from '@/services/workflow'
 
 type DialogType =
@@ -73,6 +80,7 @@ type DialogType =
   | 'resolve'
   | 'extend'
   | 'close'
+  | 'receipt'
   | null
 
 export function RequestDetailPage({ requestId }: { requestId: string }) {
@@ -82,6 +90,8 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const request = data?.requests.find((item) => item.id === requestId)
   const [dialog, setDialog] = useState<DialogType>(null)
   const [selectedTask, setSelectedTask] = useState<WorkflowStep>()
+  const [selectedItem, setSelectedItem] = useState<{ id: string; label: string }>()
+  const [receiptOutcome, setReceiptOutcome] = useState<'success' | 'failure'>('success')
   const [conflictIndex, setConflictIndex] = useState(0)
   const [content, setContent] = useState('')
   const [assignee, setAssignee] = useState('')
@@ -108,6 +118,8 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const extendRequest = useExtendRequestMutation()
   const closeRequest = useCloseRequestMutation()
   const addComment = useAddCommentMutation()
+  const dispatchBatch = useDispatchBatchMutation()
+  const recordReceipt = useRecordReceiptMutation()
 
   const comments = useMemo(
     () => data?.comments.filter((comment) => comment.requestId === requestId) ?? [],
@@ -121,6 +133,46 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const completedTasks = request.tasks.filter((task) => task.status === 'completed').length
   const currentTask = request.tasks.find((task) => task.status === 'active')
   const systems = data.systems.filter((system) => request.affectedSystemIds.includes(system.id))
+  const conclusion = getBatchConclusion(request, data.systems)
+  const requestClosed = ['completed', 'rejected'].includes(request.status)
+  const dispatchable = conclusion.systems.some(
+    (item) =>
+      item.state === 'failed' ||
+      item.state === 'superseded' ||
+      item.state === 'not-dispatched' ||
+      item.stale,
+  )
+  const canDispatch =
+    request.identity.status === 'verified' && !requestClosed && dispatchable
+  const sortedBatches = [...request.batches].sort((left, right) => right.sequence - left.sequence)
+
+  function systemName(systemId: string) {
+    return data?.systems.find((system) => system.id === systemId)?.name ?? systemId
+  }
+
+  function openReceiptDialog(batch: ExecutionBatch, item: BatchItem) {
+    setSelectedItem({
+      id: item.id,
+      label: `第 ${batch.sequence} 批 · ${systemName(item.systemId)} · 第 ${item.attempt} 次尝试`,
+    })
+    setReceiptOutcome('success')
+    setContent('')
+    setDialog('receipt')
+    onOpen()
+  }
+
+  async function dispatchBatchAction() {
+    try {
+      await dispatchBatch.mutateAsync({ requestId, operator: '隐私运营' })
+      toast({ title: '执行批次已派发，成功回执保持不变', status: 'success' })
+    } catch (error) {
+      toast({
+        title: '批次未派发',
+        description: error instanceof Error ? error.message : '请检查批次状态',
+        status: 'error',
+      })
+    }
+  }
 
   function openDialog(type: DialogType, task?: WorkflowStep, index = 0) {
     if (!request) return
@@ -256,6 +308,18 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           }),
         '请求已完成并关闭',
       )
+    } else if (dialog === 'receipt' && selectedItem) {
+      await run(
+        () =>
+          recordReceipt.mutateAsync({
+            requestId,
+            itemId: selectedItem.id,
+            outcome: receiptOutcome,
+            failureReason: content,
+            operator: '数据管理员',
+          }),
+        receiptOutcome === 'success' ? '成功回执已登记' : '失败回执已登记并转入复核',
+      )
     }
   }
 
@@ -288,6 +352,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
     resolve: '记录冲突复核结论',
     extend: '延期处理请求',
     close: '关闭请求并合并结果',
+    receipt: '登记系统回执',
   }
 
   return (
@@ -469,6 +534,144 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </Alert>
         </Box>
       </div>
+
+      <Box className="panel">
+        <Flex className="panel-title">
+          <Heading size="sm">跨系统执行批次</Heading>
+          <HStack>
+            <Badge colorScheme={conclusion.allSucceeded ? 'green' : conclusion.needsReview ? 'red' : 'blue'}>
+              {conclusion.succeededCount}/{conclusion.totalCount} 结清
+            </Badge>
+            <Button
+              size="xs"
+              colorScheme="brand"
+              leftIcon={<Send size={13} />}
+              isDisabled={!canDispatch}
+              isLoading={dispatchBatch.isPending}
+              onClick={() => void dispatchBatchAction()}
+            >
+              {!request.batches.length
+                ? '派发执行批次'
+                : dispatchable
+                  ? `重试未结系统（第 ${conclusion.latestBatchSequence + 1} 批）`
+                  : '等待在途回执'}
+            </Button>
+          </HStack>
+        </Flex>
+        <Alert
+          status={conclusion.allSucceeded ? 'success' : conclusion.needsReview ? 'warning' : 'info'}
+          mb="4"
+          borderRadius="5px"
+        >
+          批次结论：{conclusion.summary}
+        </Alert>
+        {!request.batches.length ? (
+          <Text color="gray.500" fontSize="sm">
+            尚未派发执行批次；身份核验通过且无未决冲突时自动派发首批，也可在此手动派发。
+          </Text>
+        ) : null}
+        {sortedBatches.map((batch) => (
+          <Box key={batch.id} className="timeline-item" mb="3">
+            <Flex justify="space-between" align="center" mb="2" wrap="wrap" gap="2">
+              <HStack>
+                <Badge colorScheme="brand">第 {batch.sequence} 批</Badge>
+                <Badge
+                  colorScheme={
+                    batch.status === 'settled'
+                      ? 'green'
+                      : batch.status === 'superseded'
+                        ? 'orange'
+                        : 'blue'
+                  }
+                >
+                  {batchStatusLabels[batch.status]}
+                </Badge>
+                {batch.scopeHash !== conclusion.scopeHash ? (
+                  <Badge colorScheme="orange">范围已更新</Badge>
+                ) : null}
+              </HStack>
+              <Text color="gray.500" fontSize="xs">
+                {batch.dispatchedBy} · {new Date(batch.dispatchedAt).toLocaleString('zh-CN')} ·
+                指纹 <span className="mono">{batch.scopeHash}</span>
+              </Text>
+            </Flex>
+            <TableContainer>
+              <Table size="sm">
+                <Thead>
+                  <Tr>
+                    <Th>系统</Th>
+                    <Th>尝试</Th>
+                    <Th>状态</Th>
+                    <Th>回执号</Th>
+                    <Th>完成时间</Th>
+                    <Th>失败原因 / 作废记录</Th>
+                    <Th>操作</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {batch.items.map((item) => (
+                    <Tr key={item.id}>
+                      <Td>{systemName(item.systemId)}</Td>
+                      <Td whiteSpace="nowrap">
+                        第 {item.attempt} 次{item.retryOfItemId ? '（重试）' : ''}
+                      </Td>
+                      <Td>
+                        <Badge
+                          colorScheme={
+                            item.status === 'succeeded'
+                              ? 'green'
+                              : item.status === 'failed'
+                                ? 'red'
+                                : item.status === 'superseded'
+                                  ? 'orange'
+                                  : 'blue'
+                          }
+                        >
+                          {batchItemStatusLabels[item.status]}
+                        </Badge>
+                      </Td>
+                      <Td className="mono" fontSize="xs">
+                        {item.receipt?.receiptNo ?? '—'}
+                      </Td>
+                      <Td whiteSpace="nowrap" fontSize="sm">
+                        {item.receipt?.completedAt
+                          ? new Date(item.receipt.completedAt).toLocaleString('zh-CN')
+                          : '—'}
+                      </Td>
+                      <Td maxW="260px">
+                        {item.failureReason ? (
+                          <Text color="red.600" fontSize="xs">
+                            {item.failureReason}
+                          </Text>
+                        ) : null}
+                        {item.voidedReceipt ? (
+                          <Text color="orange.600" fontSize="xs">
+                            迟到回执 {item.voidedReceipt.receiptNo} 已作废转复核
+                          </Text>
+                        ) : null}
+                        {!item.failureReason && !item.voidedReceipt ? (
+                          <Text color="gray.400" fontSize="xs">
+                            —
+                          </Text>
+                        ) : null}
+                      </Td>
+                      <Td>
+                        {(item.status === 'sent' ||
+                          (item.status === 'superseded' && !item.voidedReceipt)) &&
+                        !requestClosed ? (
+                          <Button size="xs" variant="outline" onClick={() => openReceiptDialog(batch, item)}>
+                            {item.status === 'sent' ? '登记回执' : '登记迟到回执'}
+                          </Button>
+                        ) : null}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            </TableContainer>
+          </Box>
+        ))}
+      </Box>
 
       <div className="three-column">
         <Box className="panel">
@@ -861,18 +1064,60 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
             ) : null}
 
             {['block', 'conflict', 'resolve', 'close'].includes(dialog ?? '') ? (
-              <FormControl isRequired>
-                <FormLabel>{dialog === 'close' ? '结果合并说明' : '原因与说明'}</FormLabel>
-                <Textarea
-                  value={content}
-                  onChange={(event) => setContent(event.target.value)}
-                  placeholder={
-                    dialog === 'close'
-                      ? '说明各系统处理结果、保留的例外和最终结论'
-                      : '填写可审计的原因和处理依据'
-                  }
-                />
-              </FormControl>
+              <>
+                {dialog === 'close' ? (
+                  <Alert
+                    status={conclusion.allSucceeded ? 'success' : 'warning'}
+                    mb="4"
+                    borderRadius="5px"
+                  >
+                    批次结论：{conclusion.summary}
+                  </Alert>
+                ) : null}
+                <FormControl isRequired>
+                  <FormLabel>{dialog === 'close' ? '结果合并说明' : '原因与说明'}</FormLabel>
+                  <Textarea
+                    value={content}
+                    onChange={(event) => setContent(event.target.value)}
+                    placeholder={
+                      dialog === 'close'
+                        ? '说明各系统处理结果、保留的例外和最终结论'
+                        : '填写可审计的原因和处理依据'
+                    }
+                  />
+                </FormControl>
+              </>
+            ) : null}
+
+            {dialog === 'receipt' && selectedItem ? (
+              <VStack align="stretch" spacing="4">
+                <Alert status="info" borderRadius="5px">
+                  {selectedItem.label}。回执一经登记即为最终回执，不可覆盖；若批次发出后范围已更新，
+                  回执将作废并转入复核。
+                </Alert>
+                <FormControl>
+                  <FormLabel>回执结果</FormLabel>
+                  <Select
+                    value={receiptOutcome}
+                    onChange={(event) =>
+                      setReceiptOutcome(event.target.value as 'success' | 'failure')
+                    }
+                  >
+                    <option value="success">执行成功</option>
+                    <option value="failure">执行失败（法务保留或系统异常）</option>
+                  </Select>
+                </FormControl>
+                {receiptOutcome === 'failure' ? (
+                  <FormControl isRequired>
+                    <FormLabel>失败原因</FormLabel>
+                    <Textarea
+                      value={content}
+                      onChange={(event) => setContent(event.target.value)}
+                      placeholder="例如 法务保留：涉及未决诉讼，暂停删除"
+                    />
+                  </FormControl>
+                ) : null}
+              </VStack>
             ) : null}
 
             {dialog === 'extend' ? (

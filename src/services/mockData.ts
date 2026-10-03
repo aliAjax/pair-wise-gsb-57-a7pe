@@ -1,4 +1,5 @@
-import type { DataSystem, PrivacyRequest, WorkspaceState } from '@/types/domain'
+import type { DataSystem, PrivacyRequest, WorkflowStep, WorkspaceState } from '@/types/domain'
+import { computeScopeHash } from './batchService'
 import { addDays, buildWorkflowSteps } from './workflow'
 
 const systems: DataSystem[] = [
@@ -74,6 +75,13 @@ function audit(
   return { id, action, operator, detail, createdAt }
 }
 
+function patchTasks(
+  tasks: WorkflowStep[],
+  patches: Record<string, Partial<WorkflowStep>>,
+): WorkflowStep[] {
+  return tasks.map((task) => (patches[task.id] ? { ...task, ...patches[task.id] } : task))
+}
+
 export function createInitialState(): WorkspaceState {
   const request1At = '2026-09-25T02:30:00.000Z'
   const request2At = '2026-09-18T06:20:00.000Z'
@@ -85,6 +93,107 @@ export function createInitialState(): WorkspaceState {
   const request3Due = addDays(new Date(request3At), 45).toISOString()
   const request4Due = addDays(new Date(request4At), 30).toISOString()
   const request5Due = addDays(new Date(request5At), 30).toISOString()
+
+  const request1Tasks = patchTasks(
+    buildWorkflowSteps({
+      requestId: 'req-001',
+      type: 'access',
+      systemIds: ['sys-crm', 'sys-order', 'sys-support'],
+      requestedAt: request1At,
+      dueAt: request1Due,
+      initialStatus: 'processing',
+      systems,
+    }),
+    {
+      'req-001-locate-sys-crm': { status: 'completed', completedAt: '2026-09-25T06:00:00.000Z' },
+      'req-001-execute-sys-crm': { status: 'completed', completedAt: '2026-09-26T09:00:00.000Z' },
+      'req-001-locate-sys-order': { status: 'completed', completedAt: '2026-09-25T07:00:00.000Z' },
+      'req-001-execute-sys-order': { status: 'completed', completedAt: '2026-09-27T11:00:00.000Z' },
+      'req-001-locate-sys-support': { status: 'completed', completedAt: '2026-09-26T02:00:00.000Z' },
+      'req-001-execute-sys-support': { status: 'active' },
+    },
+  )
+  const request1Scope = computeScopeHash({
+    type: 'access',
+    affectedSystemIds: ['sys-crm', 'sys-order', 'sys-support'],
+    tasks: request1Tasks,
+  })
+
+  const request3Tasks = patchTasks(
+    buildWorkflowSteps({
+      requestId: 'req-003',
+      type: 'rectification',
+      systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
+      requestedAt: request3At,
+      dueAt: request3Due,
+      initialStatus: 'processing',
+      systems,
+    }),
+    {
+      'req-003-locate-sys-crm': { status: 'completed', completedAt: '2026-09-21T07:00:00.000Z' },
+      'req-003-execute-sys-crm': { status: 'completed', completedAt: '2026-09-22T10:00:00.000Z' },
+      'req-003-locate-sys-risk': { status: 'completed', completedAt: '2026-09-21T08:00:00.000Z' },
+      'req-003-execute-sys-risk': {
+        status: 'blocked',
+        exceptionReason: '系统回执失败：法务保留：反欺诈风险标签需例外审查，暂缓更正。',
+      },
+      'req-003-locate-sys-support': { status: 'completed', completedAt: '2026-09-22T03:00:00.000Z' },
+      'req-003-execute-sys-support': { status: 'active' },
+    },
+  )
+  const request3Scope = computeScopeHash({
+    type: 'rectification',
+    affectedSystemIds: ['sys-crm', 'sys-risk', 'sys-support'],
+    tasks: request3Tasks,
+  })
+
+  const request4Tasks = patchTasks(
+    buildWorkflowSteps({
+      requestId: 'req-004',
+      type: 'withdraw-consent',
+      systemIds: ['sys-marketing'],
+      requestedAt: request4At,
+      dueAt: request4Due,
+      initialStatus: 'pending-close',
+      systems,
+    }),
+    {
+      'req-004-execute-sys-marketing': { completedAt: '2026-09-28T09:00:00.000Z' },
+      'req-004-merge': { completedAt: '2026-09-28T09:10:00.000Z' },
+      'req-004-review': { completedAt: '2026-09-28T09:10:00.000Z' },
+    },
+  )
+  const request4Scope = computeScopeHash({
+    type: 'withdraw-consent',
+    affectedSystemIds: ['sys-marketing'],
+    tasks: request4Tasks,
+  })
+
+  const request5Tasks = patchTasks(
+    buildWorkflowSteps({
+      requestId: 'req-005',
+      type: 'deletion',
+      systemIds: ['sys-crm', 'sys-marketing'],
+      requestedAt: request5At,
+      dueAt: request5Due,
+      initialStatus: 'completed',
+      systems,
+    }),
+    {
+      'req-005-locate-sys-crm': { completedAt: '2026-09-06T02:00:00.000Z' },
+      'req-005-execute-sys-crm': { completedAt: '2026-09-08T05:00:00.000Z' },
+      'req-005-locate-sys-marketing': { completedAt: '2026-09-06T03:00:00.000Z' },
+      'req-005-execute-sys-marketing': { completedAt: '2026-09-09T06:00:00.000Z' },
+      'req-005-merge': { completedAt: '2026-09-09T08:00:00.000Z' },
+      'req-005-review': { completedAt: '2026-09-10T01:00:00.000Z' },
+      'req-005-close': { completedAt: '2026-09-10T02:00:00.000Z' },
+    },
+  )
+  const request5Scope = computeScopeHash({
+    type: 'deletion',
+    affectedSystemIds: ['sys-crm', 'sys-marketing'],
+    tasks: request5Tasks,
+  })
 
   const requests: PrivacyRequest[] = [
     {
@@ -107,15 +216,73 @@ export function createInitialState(): WorkspaceState {
       dueAt: request1Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-crm', 'sys-order', 'sys-support'],
-      tasks: buildWorkflowSteps({
-        requestId: 'req-001',
-        type: 'access',
-        systemIds: ['sys-crm', 'sys-order', 'sys-support'],
-        requestedAt: request1At,
-        dueAt: request1Due,
-        initialStatus: 'processing',
-        systems,
-      }),
+      tasks: request1Tasks,
+      batches: [
+        {
+          id: 'batch-001-1',
+          requestId: 'req-001',
+          sequence: 1,
+          scopeHash: request1Scope,
+          scopeSnapshot: {
+            type: 'access',
+            systemIds: ['sys-crm', 'sys-order', 'sys-support'],
+            taskIds: [
+              'req-001-execute-sys-crm',
+              'req-001-execute-sys-order',
+              'req-001-execute-sys-support',
+            ],
+          },
+          status: 'in-flight',
+          dispatchedAt: '2026-09-25T04:20:00.000Z',
+          dispatchedBy: '隐私运营',
+          items: [
+            {
+              id: 'item-001-crm-1',
+              batchId: 'batch-001-1',
+              systemId: 'sys-crm',
+              taskId: 'req-001-execute-sys-crm',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-001-B1-CRM-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-26T09:00:00.000Z',
+                completedAt: '2026-09-26T09:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-26T09:00:00.000Z',
+            },
+            {
+              id: 'item-001-order-1',
+              batchId: 'batch-001-1',
+              systemId: 'sys-order',
+              taskId: 'req-001-execute-sys-order',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-001-B1-ORDER-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-27T11:00:00.000Z',
+                completedAt: '2026-09-27T11:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-27T11:00:00.000Z',
+            },
+            {
+              id: 'item-001-support-1',
+              batchId: 'batch-001-1',
+              systemId: 'sys-support',
+              taskId: 'req-001-execute-sys-support',
+              attempt: 1,
+              status: 'sent',
+              failureReason: '',
+              updatedAt: '2026-09-25T04:20:00.000Z',
+            },
+          ],
+        },
+      ],
       evidence: [
         {
           id: 'evidence-001-a',
@@ -170,6 +337,7 @@ export function createInitialState(): WorkspaceState {
         initialStatus: 'review-required',
         systems,
       }),
+      batches: [],
       evidence: [],
       conflicts: [
         '身份材料不足：授权书无法证明申请人与数据主体关系。',
@@ -207,17 +375,77 @@ export function createInitialState(): WorkspaceState {
       dueAt: request3Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-crm', 'sys-risk', 'sys-support'],
-      tasks: buildWorkflowSteps({
-        requestId: 'req-003',
-        type: 'rectification',
-        systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
-        requestedAt: request3At,
-        dueAt: request3Due,
-        initialStatus: 'processing',
-        systems,
-      }).map((step, index) => (index === 1 ? { ...step, status: 'blocked', exceptionReason: '风控平台返回值与客服系统不一致。' } : step)),
+      tasks: request3Tasks,
+      batches: [
+        {
+          id: 'batch-003-1',
+          requestId: 'req-003',
+          sequence: 1,
+          scopeHash: request3Scope,
+          scopeSnapshot: {
+            type: 'rectification',
+            systemIds: ['sys-crm', 'sys-risk', 'sys-support'],
+            taskIds: [
+              'req-003-execute-sys-crm',
+              'req-003-execute-sys-risk',
+              'req-003-execute-sys-support',
+            ],
+          },
+          status: 'in-flight',
+          dispatchedAt: '2026-09-21T06:00:00.000Z',
+          dispatchedBy: '隐私运营',
+          items: [
+            {
+              id: 'item-003-crm-1',
+              batchId: 'batch-003-1',
+              systemId: 'sys-crm',
+              taskId: 'req-003-execute-sys-crm',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-003-B1-CRM-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-22T10:00:00.000Z',
+                completedAt: '2026-09-22T10:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-22T10:00:00.000Z',
+            },
+            {
+              id: 'item-003-risk-1',
+              batchId: 'batch-003-1',
+              systemId: 'sys-risk',
+              taskId: 'req-003-execute-sys-risk',
+              attempt: 1,
+              status: 'failed',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-003-B1-RISK-A1',
+                outcome: 'failure',
+                failureReason: '法务保留：反欺诈风险标签需例外审查，暂缓更正。',
+                receivedAt: '2026-09-28T08:30:00.000Z',
+              },
+              failureReason: '法务保留：反欺诈风险标签需例外审查，暂缓更正。',
+              updatedAt: '2026-09-28T08:30:00.000Z',
+            },
+            {
+              id: 'item-003-support-1',
+              batchId: 'batch-003-1',
+              systemId: 'sys-support',
+              taskId: 'req-003-execute-sys-support',
+              attempt: 1,
+              status: 'sent',
+              failureReason: '',
+              updatedAt: '2026-09-21T06:00:00.000Z',
+            },
+          ],
+        },
+      ],
       evidence: [],
-      conflicts: ['跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。'],
+      conflicts: [
+        '批次回执失败：风控决策平台 —— 法务保留：反欺诈风险标签需例外审查，暂缓更正。',
+        '跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。',
+      ],
       resultSummary: '',
       closureReason: '',
       audit: [
@@ -250,15 +478,43 @@ export function createInitialState(): WorkspaceState {
       dueAt: request4Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-marketing'],
-      tasks: buildWorkflowSteps({
-        requestId: 'req-004',
-        type: 'withdraw-consent',
-        systemIds: ['sys-marketing'],
-        requestedAt: request4At,
-        dueAt: request4Due,
-        initialStatus: 'pending-close',
-        systems,
-      }),
+      tasks: request4Tasks,
+      batches: [
+        {
+          id: 'batch-004-1',
+          requestId: 'req-004',
+          sequence: 1,
+          scopeHash: request4Scope,
+          scopeSnapshot: {
+            type: 'withdraw-consent',
+            systemIds: ['sys-marketing'],
+            taskIds: ['req-004-execute-sys-marketing'],
+          },
+          status: 'settled',
+          dispatchedAt: '2026-09-24T07:10:00.000Z',
+          dispatchedBy: '隐私运营',
+          settledAt: '2026-09-28T09:00:00.000Z',
+          items: [
+            {
+              id: 'item-004-marketing-1',
+              batchId: 'batch-004-1',
+              systemId: 'sys-marketing',
+              taskId: 'req-004-execute-sys-marketing',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-004-B1-MARKETING-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-28T09:00:00.000Z',
+                completedAt: '2026-09-28T09:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-28T09:00:00.000Z',
+            },
+          ],
+        },
+      ],
       evidence: [
         {
           id: 'evidence-004-a',
@@ -304,15 +560,60 @@ export function createInitialState(): WorkspaceState {
       dueAt: request5Due,
       extendedDays: 0,
       affectedSystemIds: ['sys-crm', 'sys-marketing'],
-      tasks: buildWorkflowSteps({
-        requestId: 'req-005',
-        type: 'deletion',
-        systemIds: ['sys-crm', 'sys-marketing'],
-        requestedAt: request5At,
-        dueAt: request5Due,
-        initialStatus: 'completed',
-        systems,
-      }),
+      tasks: request5Tasks,
+      batches: [
+        {
+          id: 'batch-005-1',
+          requestId: 'req-005',
+          sequence: 1,
+          scopeHash: request5Scope,
+          scopeSnapshot: {
+            type: 'deletion',
+            systemIds: ['sys-crm', 'sys-marketing'],
+            taskIds: ['req-005-execute-sys-crm', 'req-005-execute-sys-marketing'],
+          },
+          status: 'settled',
+          dispatchedAt: '2026-09-05T04:00:00.000Z',
+          dispatchedBy: '隐私运营',
+          settledAt: '2026-09-09T06:00:00.000Z',
+          items: [
+            {
+              id: 'item-005-crm-1',
+              batchId: 'batch-005-1',
+              systemId: 'sys-crm',
+              taskId: 'req-005-execute-sys-crm',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-005-B1-CRM-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-08T05:00:00.000Z',
+                completedAt: '2026-09-08T05:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-08T05:00:00.000Z',
+            },
+            {
+              id: 'item-005-marketing-1',
+              batchId: 'batch-005-1',
+              systemId: 'sys-marketing',
+              taskId: 'req-005-execute-sys-marketing',
+              attempt: 1,
+              status: 'succeeded',
+              receipt: {
+                receiptNo: 'RCPT-DSR-2026-005-B1-MARKETING-A1',
+                outcome: 'success',
+                failureReason: '',
+                receivedAt: '2026-09-09T06:00:00.000Z',
+                completedAt: '2026-09-09T06:00:00.000Z',
+              },
+              failureReason: '',
+              updatedAt: '2026-09-09T06:00:00.000Z',
+            },
+          ],
+        },
+      ],
       evidence: [
         {
           id: 'evidence-005-a',

@@ -1,6 +1,9 @@
 export type {
+  BatchItem,
+  BatchReceipt,
   DataSystem,
   AuditEntry,
+  ExecutionBatch,
   ExecutionEvidence,
   IdentityCheck,
   PrivacyRequest,
